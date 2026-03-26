@@ -1,0 +1,256 @@
+[질문 재정의]
+"주어진 두 기획서(프로젝트 명세 + 수확/힐링 블렌딩 핵심 시스템)를 바탕으로,
+실제 기능 구현에 앞서 게임의 기반이 될 코드 구조/데이터 모델/UI 흐름을 먼저 설계한 뒤,
+그 설계안을 TEXT 파일로 작성해 보고해 달라"는 요청입니다.
+
+[은하수 간이역 - 기반 코드 설계안 v0.1]
+목표: 즉시 구현이 가능한 최소 골격(MVP Foundation)을 먼저 만들 수 있도록,
+시스템 경계/데이터 모델/게임 루프/이벤트/저장 구조를 명확히 정의한다.
+
+==================================================
+1) 기술 스택 제안 (크로스 플랫폼 우선)
+==================================================
+- 엔진: Unity (2D URP + Isometric Tilemap)
+- 언어: C#
+- 데이터: ScriptableObject + JSON Save
+- 비동기/타이머: UniTask(선택) 또는 Coroutine + UTC 기반 타임스탬프
+- 오디오: AudioMixer + 이벤트 기반 SFX 트리거
+
+폴더 구조(초안)
+- Assets/
+  - _Game/
+    - Core/
+      - Bootstrap/
+      - Time/
+      - Save/
+      - EventBus/
+    - Data/
+      - Crops/
+      - Recipes/
+      - NPC/
+      - Furniture/
+      - Economy/
+    - Systems/
+      - Farm/
+      - Blending/
+      - NPC/
+      - Housing/
+      - IdleFairy/
+    - UI/
+      - Garden/
+      - Kitchen/
+      - Inventory/
+      - Popup/
+    - Audio/
+    - Art/
+
+==================================================
+2) 핵심 도메인 모델
+==================================================
+2.1 화폐/재화
+- GalaxyDust (은하수 가루): 기본 재화
+- StarShard (별조각): 인테리어/확장 재화
+
+2.2 작물(Crop)
+- id: string
+- displayName: string
+- growthDurationSec: int (600~43200)
+- harvestYield: ItemStack[]
+- waterSpeedUpRate: float (=0.2)
+
+2.3 밭 슬롯(FarmPlotState)
+- plotId: int
+- cropId: string?
+- plantedAtUtc: long
+- baseFinishAtUtc: long
+- watered: bool
+- finishAtUtc: long (물주기 반영)
+- isReady(nowUtc): bool
+
+2.4 아이템(ItemDefinition)
+- id: string
+- type: CropIngredient | TeaBase | TeaProduct | Material
+- stackable: bool
+
+2.5 레시피(RecipeDefinition)
+- id: string
+- baseIngredientId: string
+- ingredientAId: string
+- ingredientBId: string? (선택)
+- resultItemId: string
+- flavorText: string
+- targetMoodTags: string[]
+
+2.6 블렌딩 세션(BlendSession)
+- selectedIngredientIds: List<string> (max 3)
+- state: Idle | Brewing | Completed
+- brewDurationSec: int (3~5)
+
+2.7 NPC 손님(NpcGuestState)
+- npcId: string
+- affinity: int (0~100)
+- currentMoodTag: string
+- lastVisitUtc: long
+- unlockedPostcards: HashSet<string>
+
+==================================================
+3) 시스템별 최소 인터페이스 (코드 골격)
+==================================================
+3.1 TimeService
+- long UtcNow()
+- int GetInGameHour()
+- WeatherType GetWeather()
+
+3.2 SaveService
+- LoadGameState()
+- SaveGameState(GameState state)
+- AutoSave(interval)
+
+3.3 FarmSystem
+- Plant(plotId, cropId)
+- Water(plotId) // 성장시간 20% 단축, 페널티 없음
+- HarvestBySwipe(plotId)
+- RefreshOfflineProgress(elapsedSec)
+
+3.4 IdleFairySystem
+- SimulateOfflineCleanup(elapsedSec, cap=24h)
+- GrantGalaxyDust(amount)
+
+3.5 InventorySystem
+- AddItem(itemId, qty)
+- RemoveItem(itemId, qty)
+- HasItems(requirements)
+
+3.6 BlendingSystem
+- StartBlend(ingredientIds<=3)
+- ResolveRecipe(base+sub1+sub2?)
+- OnUnknownRecipe => "포근한 보리차" 반환
+- CompleteBlendAfterTimer(3~5s)
+
+3.7 NpcSystem
+- SpawnGuestByContext(time/weather)
+- ServeTea(npcId, teaItemId)
+  - mood match: affinity +2
+  - default tea: affinity +1
+- CheckPostcardUnlock(npcId)
+
+3.8 HousingSystem
+- PlaceFurniture(gridPos, furnitureId)
+- UnlockZone(zoneId)
+- TriggerFurnitureInteractionAnimation(npcId, furnitureId)
+
+==================================================
+4) 게임 루프를 코드 이벤트로 매핑
+==================================================
+[Loop-1] 접속/복귀
+- AppStart -> LoadGameState
+- CalculateOfflineElapsed
+- IdleFairySystem.SimulateOfflineCleanup
+- FarmSystem.RefreshOfflineProgress
+- UI에 오프라인 수익 팝업
+
+[Loop-2] 수확
+- GardenInput(Swipe) -> FarmSystem.HarvestBySwipe
+- Inventory Add + SFX(실로폰/반짝임)
+
+[Loop-3] 블렌딩
+- Teapot Tap -> KitchenUI Open(블러 + 슬라이드업)
+- DragDrop 재료(최대 3개)
+- Brew 버튼 -> 3~5초 ASMR + 증기 연출
+- Recipe resolve -> tea item 획득 + flavor text 노출
+
+[Loop-4] 손님 교감
+- NPC 등장 -> 말풍선 mood 힌트
+- ServeTea -> affinity 증가 -> postcard 보상
+
+[Loop-5] 꾸미기/성장
+- StarShard/GalaxyDust 소비 -> 가구 배치/구역 확장
+- 신규 레시피/정원 해금 -> 루프 반복
+
+==================================================
+5) UI 상태 머신 (최소)
+==================================================
+- GardenState
+- StationState
+- KitchenBlendState
+- NpcDialogueState
+- HousingEditState
+
+전환 규칙 예시
+- Garden -> Station: 역 내부 진입 버튼
+- Station -> KitchenBlend: 찻주전자 탭
+- KitchenBlend -> Station: 완료/닫기
+
+==================================================
+6) 데이터 드리븐 설계 규칙
+==================================================
+- 작물 성장시간/수확량/레시피/호감도 보상값은 코드 하드코딩 금지
+- ScriptableObject 또는 JSON 테이블로 분리
+- 밸런싱 파라미터는 EconomyConfig에 집중
+
+EconomyConfig 예시
+- waterSpeedUpRate = 0.2
+- fallbackTeaItemId = "tea_fallback_barley"
+- affinityGainPerfect = 2
+- affinityGainDefault = 1
+- idleFairyMaxHours = 24
+
+==================================================
+7) 초기 샘플 데이터 (기획서 반영)
+==================================================
+레시피 샘플
+1) 달빛 딸기 홍차
+- 은하수 찻잎 + 달빛 딸기 -> moonlight_strawberry_blacktea
+
+2) 별가루 라떼
+- 우유 + 별가루 밀 + 꿀밤 -> stardust_latte
+
+3) 심야의 민트티
+- 은하수 찻잎 + 밤바람 민트 -> midnight_mint_tea
+
+4) 노을빛 사과차
+- 가을빛 찻잎 + 말린 사과 -> sunset_apple_tea
+
+5) 포근한 보리차
+- 미등록 조합 전부 fallback 처리
+
+==================================================
+8) 구현 우선순위 (Sprint 0~2)
+==================================================
+Sprint 0 (기반)
+- Time/Save/EventBus/Inventory 기본
+- GameState 직렬화/역직렬화
+
+Sprint 1 (핵심 루프)
+- FarmSystem + Water/Harvest 스와이프
+- Kitchen Blend UI + Recipe/Fallback
+- 기본 ASMR SFX Hook
+
+Sprint 2 (보상/성장)
+- NPC mood + affinity + postcard
+- Housing grid 배치 + 구역 1단계 확장
+- 오프라인 요정 24h 보상
+
+==================================================
+9) 리스크 및 대응
+==================================================
+- 오프라인 시간 조작(디바이스 시간 변경) 악용
+  -> 서버 시간 또는 누적 비정상 패턴 체크(추후)
+- 데이터 증가로 인한 관리 난이도
+  -> Definition/State 분리, ID 규칙 표준화
+- 힐링 감성 핵심(사운드/연출) 누락 위험
+  -> 기능 완료 기준(DoD)에 ASMR/연출 포함
+
+==================================================
+10) 착수용 체크리스트
+==================================================
+[ ] GameState 스키마 확정
+[ ] Crop/Recipe/NPC ScriptableObject 템플릿 생성
+[ ] Garden Swipe Harvest 입력 구현
+[ ] Kitchen Drag&Drop + 3슬롯 제한 구현
+[ ] Brew 3~5초 연출 및 결과 팝업 구현
+[ ] Fallback "포근한 보리차" 로직 검증
+[ ] Affinity + Postcard 해금 테스트
+[ ] 저장/복귀/오프라인 보상 검증
+
+문서 끝.
